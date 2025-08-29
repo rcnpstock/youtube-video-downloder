@@ -1,12 +1,15 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const youtubedl = require('youtube-dl-exec');
+const YTDlpWrap = require('yt-dlp-wrap').default;
 const cors = require('cors');
 const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Initialize yt-dlp
+const ytDlpWrap = new YTDlpWrap();
 
 // Configure CORS for cross-origin requests from Netlify frontend
 app.use(cors({
@@ -52,29 +55,25 @@ function getNextVideoName(folder, prefix = 'video') {
 function getFormatOptions(quality) {
   switch (quality) {
     case 'best':
-      return { format: 'best[ext=mp4]/best' };
+      return ['--format', 'best[ext=mp4]/best'];
     case 'worst':
-      return { format: 'worst[ext=mp4]/worst' };
+      return ['--format', 'worst[ext=mp4]/worst'];
     case 'audio':
-      return { 
-        format: 'bestaudio[ext=mp3]/bestaudio/best[height<=?480]',
-        extractAudio: true,
-        audioFormat: 'mp3'
-      };
+      return ['--format', 'bestaudio', '--extract-audio', '--audio-format', 'mp3'];
     case '2160':
-      return { format: 'best[height<=2160][ext=mp4]/best[height<=2160]/best' };
+      return ['--format', 'best[height<=2160][ext=mp4]/best[height<=2160]/best'];
     case '1440':
-      return { format: 'best[height<=1440][ext=mp4]/best[height<=1440]/best' };
+      return ['--format', 'best[height<=1440][ext=mp4]/best[height<=1440]/best'];
     case '1080':
-      return { format: 'best[height<=1080][ext=mp4]/best[height<=1080]/best' };
+      return ['--format', 'best[height<=1080][ext=mp4]/best[height<=1080]/best'];
     case '720':
-      return { format: 'best[height<=720][ext=mp4]/best[height<=720]/best' };
+      return ['--format', 'best[height<=720][ext=mp4]/best[height<=720]/best'];
     case '480':
-      return { format: 'best[height<=480][ext=mp4]/best[height<=480]/best' };
+      return ['--format', 'best[height<=480][ext=mp4]/best[height<=480]/best'];
     case '360':
-      return { format: 'best[height<=360][ext=mp4]/best[height<=360]/best' };
+      return ['--format', 'best[height<=360][ext=mp4]/best[height<=360]/best'];
     default:
-      return { format: 'best[ext=mp4]/best' };
+      return ['--format', 'best[ext=mp4]/best'];
   }
 }
 
@@ -110,16 +109,21 @@ app.post('/download', async (req, res) => {
     console.log(`Starting download for ${url} with quality: ${quality}...`);
 
     try {
-      // Download using youtube-dl-exec
-      await youtubedl(url, {
-        output: path.join(outputFolder, `${nextBaseName}.%(ext)s`),
+      // Download using yt-dlp-wrap
+      const formatOptions = getFormatOptions(quality);
+      
+      await ytDlpWrap.execPromise([
+        url,
+        '--output', path.join(outputFolder, `${nextBaseName}.%(ext)s`),
         ...formatOptions
-      });
+      ]);
 
       console.log(`Download complete! Checking for downloaded file...`);
       
-      // Find the actual downloaded file (youtube-dl might use different extension)
+      // Find the actual downloaded file
       const files = fs.readdirSync(outputFolder);
+      console.log('Available files after download:', files);
+      
       const downloadedFile = files.find(file => 
         file.startsWith(nextBaseName) && 
         !file.includes('thumbnail') &&
@@ -131,7 +135,6 @@ app.post('/download', async (req, res) => {
         throw new Error('Downloaded file not found');
       }
 
-      const actualFilePath = path.join(outputFolder, downloadedFile);
       console.log(`Download complete! Saved as ${downloadedFile}`);
       
       // Return success response
@@ -218,14 +221,15 @@ app.post('/download-thumbnail', async (req, res) => {
     const filePath = path.join(outputFolder, fileName);
 
     try {
-      // Use youtube-dl to get thumbnail
-      await youtubedl(url, {
-        writeThumbnail: true,
-        skipDownload: true,
-        output: path.join(outputFolder, `${nextBaseName}.%(ext)s`)
-      });
+      // Use yt-dlp to get thumbnail
+      await ytDlpWrap.execPromise([
+        url,
+        '--write-thumbnail',
+        '--skip-download',
+        '--output', path.join(outputFolder, `${nextBaseName}.%(ext)s`)
+      ]);
 
-      // Find the actual thumbnail file (youtube-dl creates files with various extensions)
+      // Find the actual thumbnail file
       const files = fs.readdirSync(outputFolder);
       console.log('Available files after thumbnail download:', files);
       
