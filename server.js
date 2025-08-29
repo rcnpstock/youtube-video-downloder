@@ -154,6 +154,10 @@ app.post('/download', async (req, res) => {
         errorMessage = 'Video not available in this region';  
       } else if (downloadError.message.includes('Sign in to confirm')) {
         errorMessage = 'Age-restricted content cannot be downloaded';
+      } else if (downloadError.message.includes('parsing watch.html')) {
+        errorMessage = 'YouTube changed their format. Please try again later or use a different video.';
+      } else if (downloadError.message.includes('UnrecoverableError')) {
+        errorMessage = 'Video cannot be accessed. It may be private, deleted, or restricted.';
       }
       
       return res.status(500).json({
@@ -237,6 +241,10 @@ app.post('/download-thumbnail', async (req, res) => {
       errorMessage = 'Video is unavailable or private';
     } else if (error.message.includes('fetch thumbnail')) {
       errorMessage = 'Could not fetch thumbnail image';
+    } else if (error.message.includes('parsing watch.html')) {
+      errorMessage = 'YouTube changed their format. Please try again later or use a different video.';
+    } else if (error.message.includes('UnrecoverableError') || error.message.includes('Sign in to confirm')) {
+      errorMessage = 'Video cannot be accessed. It may be private, deleted, or age-restricted.';
     }
     
     res.status(500).json({
