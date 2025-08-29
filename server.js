@@ -22,6 +22,14 @@ app.use(cors({
 
 app.use(express.json());
 
+// Serve static files (frontend)
+app.use(express.static(__dirname));
+
+// Serve index.html for root route
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
 function getNextVideoName(folder, prefix = 'video') {
   if (!fs.existsSync(folder)) {
     fs.mkdirSync(folder, { recursive: true });
@@ -235,7 +243,7 @@ app.get('/download-file/:filename', (req, res) => {
 });
 
 // API status endpoint
-app.get('/', (req, res) => {
+app.get('/api/status', (req, res) => {
   res.json({
     message: 'YouTube Downloader API is running',
     endpoints: {
