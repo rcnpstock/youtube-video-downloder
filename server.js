@@ -1,7 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const youtubedl = require('node-youtube-dl');
+const ytdl = require('ytdl-core');
 const cors = require('cors');
 const fetch = require('node-fetch');
 
@@ -50,29 +50,27 @@ function getNextVideoName(folder, prefix = 'video') {
 }
 
 function getFormatOptions(quality) {
-  const baseOptions = ['--no-check-certificate', '--prefer-insecure'];
-  
   switch (quality) {
     case 'best':
-      return [...baseOptions, '--format', 'best[ext=mp4]/best'];
+      return { quality: 'highestvideo', filter: 'audioandvideo' };
     case 'worst':
-      return [...baseOptions, '--format', 'worst[ext=mp4]/worst'];
+      return { quality: 'lowestvideo', filter: 'audioandvideo' };
     case 'audio':
-      return [...baseOptions, '--format', 'bestaudio', '--extract-audio', '--audio-format', 'mp3'];
+      return { quality: 'highestaudio', filter: 'audioonly' };
     case '2160':
-      return [...baseOptions, '--format', 'best[height<=2160][ext=mp4]/best[height<=2160]/best'];
+      return { quality: 'highestvideo', filter: format => format.height <= 2160 };
     case '1440':
-      return [...baseOptions, '--format', 'best[height<=1440][ext=mp4]/best[height<=1440]/best'];
+      return { quality: 'highestvideo', filter: format => format.height <= 1440 };
     case '1080':
-      return [...baseOptions, '--format', 'best[height<=1080][ext=mp4]/best[height<=1080]/best'];
+      return { quality: 'highestvideo', filter: format => format.height <= 1080 };
     case '720':
-      return [...baseOptions, '--format', 'best[height<=720][ext=mp4]/best[height<=720]/best'];
+      return { quality: 'highestvideo', filter: format => format.height <= 720 };
     case '480':
-      return [...baseOptions, '--format', 'best[height<=480][ext=mp4]/best[height<=480]/best'];
+      return { quality: 'highestvideo', filter: format => format.height <= 480 };
     case '360':
-      return [...baseOptions, '--format', 'best[height<=360][ext=mp4]/best[height<=360]/best'];
+      return { quality: 'highestvideo', filter: format => format.height <= 360 };
     default:
-      return [...baseOptions, '--format', 'best[ext=mp4]/best'];
+      return { quality: 'highestvideo', filter: 'audioandvideo' };
   }
 }
 
@@ -108,61 +106,33 @@ app.post('/download', async (req, res) => {
     console.log(`Starting download for ${url} with quality: ${quality}...`);
 
     try {
-      // Download using node-youtube-dl
+      // Simple ytdl-core download
       const formatOptions = getFormatOptions(quality);
-      const outputPath = path.join(outputFolder, `${nextBaseName}.%(ext)s`);
+      const isAudio = quality === 'audio';
+      const fileExtension = isAudio ? 'mp3' : 'mp4';
+      const actualFileName = `${nextBaseName}.${fileExtension}`;
+      const actualFilePath = path.join(outputFolder, actualFileName);
       
-      console.log('Executing download with options:', formatOptions);
+      console.log(`Downloading ${url} to ${actualFileName}...`);
+      
+      const stream = ytdl(url, formatOptions);
+      const writeStream = fs.createWriteStream(actualFilePath);
       
       await new Promise((resolve, reject) => {
-        const video = youtubedl(url, formatOptions, {
-          cwd: outputFolder
-        });
-        
-        video.on('info', (info) => {
-          console.log('Download started:', info.title);
-          console.log('Filename: ' + info._filename);
-          
-          const outputFile = path.join(outputFolder, `${nextBaseName}.${info.ext}`);
-          video.pipe(fs.createWriteStream(outputFile));
-        });
-        
-        video.on('complete', (info) => {
-          console.log('Download completed:', info.title);
-          resolve(info);
-        });
-        
-        video.on('error', (err) => {
-          console.error('Download error:', err);
-          reject(err);
-        });
+        stream.pipe(writeStream);
+        stream.on('end', resolve);
+        stream.on('error', reject);
+        writeStream.on('error', reject);
       });
 
-      console.log(`Download complete! Checking for downloaded file...`);
-      
-      // Find the actual downloaded file
-      const files = fs.readdirSync(outputFolder);
-      console.log('Available files after download:', files);
-      
-      const downloadedFile = files.find(file => 
-        file.startsWith(nextBaseName) && 
-        !file.includes('thumbnail') &&
-        (file.endsWith('.mp4') || file.endsWith('.mkv') || file.endsWith('.webm') || file.endsWith('.mp3'))
-      );
-      
-      if (!downloadedFile) {
-        console.error('Available files:', files);
-        throw new Error('Downloaded file not found');
-      }
-
-      console.log(`Download complete! Saved as ${downloadedFile}`);
+      console.log(`Download complete! Saved as ${actualFileName}`);
       
       // Return success response
       return res.status(200).json({
         status: 'completed',
         message: `${isAudio ? 'Audio' : 'Video'} download completed successfully!`,
-        filename: downloadedFile,
-        downloadUrl: `/download-file/${downloadedFile}`,
+        filename: actualFileName,
+        downloadUrl: `/download-file/${actualFileName}`,
         quality: quality
       });
       
@@ -241,55 +211,36 @@ app.post('/download-thumbnail', async (req, res) => {
     const filePath = path.join(outputFolder, fileName);
 
     try {
-      // Get video info first to extract thumbnail URL
-      await new Promise((resolve, reject) => {
-        youtubedl.getInfo(url, ['--no-check-certificate'], (err, info) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          
-          console.log('Got video info:', info.title);
-          
-          if (info.thumbnail) {
-            // Download thumbnail directly
-            fetch(info.thumbnail)
-              .then(response => response.arrayBuffer())
-              .then(buffer => {
-                const thumbnailPath = path.join(outputFolder, `${nextBaseName}.jpg`);
-                fs.writeFileSync(thumbnailPath, Buffer.from(buffer));
-                resolve(info);
-              })
-              .catch(reject);
-          } else {
-            reject(new Error('No thumbnail URL found'));
-          }
-        });
-      });
-
-      // Find the actual thumbnail file
-      const files = fs.readdirSync(outputFolder);
-      console.log('Available files after thumbnail download:', files);
+      // Get video info to extract thumbnail
+      const info = await ytdl.getInfo(url);
+      const thumbnail = info.videoDetails.thumbnails[info.videoDetails.thumbnails.length - 1];
       
-      const thumbnailFile = files.find(file => 
-        file.startsWith(nextBaseName) && 
-        (file.endsWith('.jpg') || file.endsWith('.jpeg') || file.endsWith('.png') || 
-         file.endsWith('.webp'))
-      );
-      
-      if (thumbnailFile) {
-        console.log(`Thumbnail download complete! Saved as ${thumbnailFile}`);
-        
-        res.status(200).json({
-          status: 'completed',
-          message: 'Thumbnail download completed successfully!',
-          filename: thumbnailFile,
-          downloadUrl: `/download-file/${thumbnailFile}`
-        });
-      } else {
-        console.error('No thumbnail file found. Available files:', files);
-        throw new Error('Thumbnail file not found after download');
+      if (!thumbnail || !thumbnail.url) {
+        throw new Error('No thumbnail available for this video');
       }
+
+      console.log(`Downloading thumbnail from: ${thumbnail.url}`);
+      
+      // Download thumbnail
+      const response = await fetch(thumbnail.url);
+      if (!response.ok) {
+        throw new Error(`Failed to download thumbnail: ${response.status}`);
+      }
+      
+      const buffer = await response.arrayBuffer();
+      const thumbnailFileName = `${nextBaseName}.jpg`;
+      const thumbnailPath = path.join(outputFolder, thumbnailFileName);
+      
+      fs.writeFileSync(thumbnailPath, Buffer.from(buffer));
+      
+      console.log(`Thumbnail download complete! Saved as ${thumbnailFileName}`);
+      
+      res.status(200).json({
+        status: 'completed',
+        message: 'Thumbnail download completed successfully!',
+        filename: thumbnailFileName,
+        downloadUrl: `/download-file/${thumbnailFileName}`
+      });
 
     } catch (downloadError) {
       console.error('Thumbnail download error:', downloadError);
