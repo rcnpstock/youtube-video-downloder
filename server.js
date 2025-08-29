@@ -8,6 +8,9 @@ const fetch = require('node-fetch');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Disable ytdl update check to avoid 403 errors
+process.env.YTDL_NO_UPDATE = 'true';
+
 // Configure CORS for cross-origin requests from Netlify frontend
 app.use(cors({
   origin: [
@@ -105,7 +108,15 @@ app.post('/download', async (req, res) => {
     try {
       const stream = ytdl(url, {
         quality: formatOptions.quality,
-        filter: formatOptions.filter
+        filter: formatOptions.filter,
+        requestOptions: {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate'
+          }
+        }
       });
 
       const writeStream = fs.createWriteStream(filePath);
@@ -183,7 +194,16 @@ app.post('/download-thumbnail', async (req, res) => {
     }
 
     // Get video info to extract thumbnail
-    const info = await ytdl.getInfo(url);
+    const info = await ytdl.getInfo(url, {
+      requestOptions: {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Encoding': 'gzip, deflate'
+        }
+      }
+    });
     const thumbnailUrl = info.videoDetails.thumbnails[info.videoDetails.thumbnails.length - 1].url;
 
     const outputFolder = path.join(__dirname, 'downloads');
