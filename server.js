@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const ytdl = require('@distube/ytdl-core');
 const cors = require('cors');
+const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,8 +13,7 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
-    'https://youtube-video-downloder-frontend.netlify.app',
-    'https://*.netlify.app'
+    'https://youtube-video-downloder-frontend.netlify.app'
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type'],
@@ -70,8 +70,19 @@ app.post('/download', async (req, res) => {
   try {
     const { url, quality = 'best' } = req.body;
     
-    if (!url || (!url.includes("youtube.com") && !url.includes("youtu.be"))) {
-      return res.status(400).json({ error: 'Invalid YouTube URL' });
+    if (!url) {
+      return res.status(400).json({ error: 'URL is required' });
+    }
+
+    if (!url.includes("youtube.com") && !url.includes("youtu.be")) {
+      return res.status(400).json({ error: 'Please provide a valid YouTube URL' });
+    }
+
+    // Validate YouTube URL format more thoroughly
+    try {
+      await ytdl.getBasicInfo(url);
+    } catch (error) {
+      return res.status(400).json({ error: 'Invalid or unavailable YouTube video' });
     }
 
     const outputFolder = path.join(__dirname, 'downloads');
@@ -79,61 +90,61 @@ app.post('/download', async (req, res) => {
     const isAudio = quality === 'audio';
     const fileExtension = isAudio ? 'mp3' : 'mp4';
     const nextBaseName = getNextVideoName(outputFolder);
+    const fileName = `${nextBaseName}.${fileExtension}`;
+    const filePath = path.join(outputFolder, fileName);
 
     console.log(`Starting download for ${url} with quality: ${quality}...`);
 
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive'
-    });
-
-    res.write(JSON.stringify({ 
+    // Use proper JSON response instead of streaming
+    res.status(200).json({ 
       status: 'started', 
       message: `Starting ${isAudio ? 'audio' : 'video'} download...`,
       quality: quality
-    }) + '\n');
-
-    // Create download stream
-    const stream = ytdl(url, {
-      quality: formatOptions.quality,
-      filter: formatOptions.filter
     });
 
-    const fileName = `${nextBaseName}.${fileExtension}`;
-    const filePath = path.join(outputFolder, fileName);
-    const writeStream = fs.createWriteStream(filePath);
+    // Download in background and create a simple status endpoint
+    setTimeout(async () => {
+      try {
+        const stream = ytdl(url, {
+          quality: formatOptions.quality,
+          filter: formatOptions.filter
+        });
 
-    // Download the file
-    await new Promise((resolve, reject) => {
-      stream.pipe(writeStream);
-      stream.on('end', resolve);
-      stream.on('error', reject);
-      writeStream.on('error', reject);
-    });
+        const writeStream = fs.createWriteStream(filePath);
 
-    if (fs.existsSync(filePath)) {
-      console.log(`Download complete! Saved as ${fileName}`);
-      res.write(JSON.stringify({
-        status: 'completed',
-        message: `${isAudio ? 'Audio' : 'Video'} download completed successfully!`,
-        filename: fileName,
-        downloadUrl: `/download-file/${fileName}`,
-        quality: quality
-      }) + '\n');
-    } else {
-      throw new Error('Downloaded file not found');
-    }
+        await new Promise((resolve, reject) => {
+          stream.pipe(writeStream);
+          stream.on('end', resolve);
+          stream.on('error', reject);
+          writeStream.on('error', reject);
+        });
 
-    res.end();
+        console.log(`Download complete! Saved as ${fileName}`);
+      } catch (error) {
+        console.error('Background download error:', error);
+        // Clean up failed download
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }
+    }, 100);
 
   } catch (error) {
     console.error('Error downloading video:', error);
-    res.write(JSON.stringify({
+    
+    let errorMessage = 'Failed to download video';
+    if (error.message.includes('unavailable')) {
+      errorMessage = 'Video is unavailable or private';
+    } else if (error.message.includes('restricted')) {
+      errorMessage = 'Video is restricted in this region';
+    } else if (error.message.includes('age')) {
+      errorMessage = 'Age-restricted content cannot be downloaded';
+    }
+    
+    res.status(500).json({
       status: 'error',
-      message: 'Failed to download video: ' + error.message
-    }) + '\n');
-    res.end();
+      message: errorMessage
+    });
   }
 });
 
@@ -141,20 +152,13 @@ app.post('/download-thumbnail', async (req, res) => {
   try {
     const { url } = req.body;
     
-    if (!url || (!url.includes("youtube.com") && !url.includes("youtu.be"))) {
-      return res.status(400).json({ error: 'Invalid YouTube URL' });
+    if (!url) {
+      return res.status(400).json({ error: 'URL is required' });
     }
 
-    res.writeHead(200, {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive'
-    });
-
-    res.write(JSON.stringify({ 
-      status: 'started', 
-      message: 'Getting video info...'
-    }) + '\n');
+    if (!url.includes("youtube.com") && !url.includes("youtu.be")) {
+      return res.status(400).json({ error: 'Please provide a valid YouTube URL' });
+    }
 
     // Get video info to extract thumbnail
     const info = await ytdl.getInfo(url);
@@ -167,26 +171,36 @@ app.post('/download-thumbnail', async (req, res) => {
 
     // Download thumbnail
     const response = await fetch(thumbnailUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch thumbnail: ${response.status}`);
+    }
+    
     const buffer = await response.arrayBuffer();
     fs.writeFileSync(filePath, Buffer.from(buffer));
 
     console.log(`Thumbnail download complete! Saved as ${fileName}`);
-    res.write(JSON.stringify({
+    
+    res.status(200).json({
       status: 'completed',
       message: 'Thumbnail download completed successfully!',
       filename: fileName,
       downloadUrl: `/download-file/${fileName}`
-    }) + '\n');
-
-    res.end();
+    });
 
   } catch (error) {
     console.error('Error downloading thumbnail:', error);
-    res.write(JSON.stringify({
+    
+    let errorMessage = 'Failed to download thumbnail';
+    if (error.message.includes('unavailable')) {
+      errorMessage = 'Video is unavailable or private';
+    } else if (error.message.includes('fetch thumbnail')) {
+      errorMessage = 'Could not fetch thumbnail image';
+    }
+    
+    res.status(500).json({
       status: 'error',
-      message: 'Failed to download thumbnail: ' + error.message
-    }) + '\n');
-    res.end();
+      message: errorMessage
+    });
   }
 });
 
