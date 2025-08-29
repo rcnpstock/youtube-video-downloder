@@ -112,32 +112,50 @@ app.post('/download', async (req, res) => {
     try {
       // Download using youtube-dl-exec
       await youtubedl(url, {
-        output: filePath,
+        output: path.join(outputFolder, `${nextBaseName}.%(ext)s`),
         ...formatOptions
       });
 
-      console.log(`Download complete! Saved as ${fileName}`);
+      console.log(`Download complete! Checking for downloaded file...`);
       
-      // Check if file was actually created
-      if (!fs.existsSync(filePath)) {
+      // Find the actual downloaded file (youtube-dl might use different extension)
+      const files = fs.readdirSync(outputFolder);
+      const downloadedFile = files.find(file => 
+        file.startsWith(nextBaseName) && 
+        !file.includes('thumbnail') &&
+        (file.endsWith('.mp4') || file.endsWith('.mkv') || file.endsWith('.webm') || file.endsWith('.mp3'))
+      );
+      
+      if (!downloadedFile) {
+        console.error('Available files:', files);
         throw new Error('Downloaded file not found');
       }
+
+      const actualFilePath = path.join(outputFolder, downloadedFile);
+      console.log(`Download complete! Saved as ${downloadedFile}`);
       
       // Return success response
       return res.status(200).json({
         status: 'completed',
         message: `${isAudio ? 'Audio' : 'Video'} download completed successfully!`,
-        filename: fileName,
-        downloadUrl: `/download-file/${fileName}`,
+        filename: downloadedFile,
+        downloadUrl: `/download-file/${downloadedFile}`,
         quality: quality
       });
       
     } catch (downloadError) {
       console.error('Download error:', downloadError);
       
-      // Clean up failed download
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
+      // Clean up failed download - check for any files starting with our base name
+      try {
+        const files = fs.readdirSync(outputFolder);
+        files.forEach(file => {
+          if (file.startsWith(nextBaseName)) {
+            fs.unlinkSync(path.join(outputFolder, file));
+          }
+        });
+      } catch (cleanupError) {
+        console.error('Cleanup error:', cleanupError);
       }
       
       let errorMessage = 'Failed to download video';
@@ -204,15 +222,20 @@ app.post('/download-thumbnail', async (req, res) => {
       await youtubedl(url, {
         writeThumbnail: true,
         skipDownload: true,
-        output: filePath.replace('.jpg', '.%(ext)s')
+        output: path.join(outputFolder, `${nextBaseName}.%(ext)s`)
       });
 
-      // Find the actual thumbnail file (youtube-dl might use different extension)
+      // Find the actual thumbnail file (youtube-dl creates files with various extensions)
       const files = fs.readdirSync(outputFolder);
-      const thumbnailFile = files.find(file => file.startsWith(nextBaseName) && file.includes('thumbnail'));
+      console.log('Available files after thumbnail download:', files);
+      
+      const thumbnailFile = files.find(file => 
+        file.startsWith(nextBaseName) && 
+        (file.endsWith('.jpg') || file.endsWith('.jpeg') || file.endsWith('.png') || 
+         file.endsWith('.webp') || file.includes('thumbnail'))
+      );
       
       if (thumbnailFile) {
-        const actualFilePath = path.join(outputFolder, thumbnailFile);
         console.log(`Thumbnail download complete! Saved as ${thumbnailFile}`);
         
         res.status(200).json({
@@ -222,6 +245,7 @@ app.post('/download-thumbnail', async (req, res) => {
           downloadUrl: `/download-file/${thumbnailFile}`
         });
       } else {
+        console.error('No thumbnail file found. Available files:', files);
         throw new Error('Thumbnail file not found after download');
       }
 
