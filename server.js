@@ -78,11 +78,9 @@ app.post('/download', async (req, res) => {
       return res.status(400).json({ error: 'Please provide a valid YouTube URL' });
     }
 
-    // Validate YouTube URL format more thoroughly
-    try {
-      await ytdl.getBasicInfo(url);
-    } catch (error) {
-      return res.status(400).json({ error: 'Invalid or unavailable YouTube video' });
+    // Basic URL format validation
+    if (!url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)/)) {
+      return res.status(400).json({ error: 'Please provide a valid YouTube URL' });
     }
 
     const outputFolder = path.join(__dirname, 'downloads');
@@ -95,39 +93,55 @@ app.post('/download', async (req, res) => {
 
     console.log(`Starting download for ${url} with quality: ${quality}...`);
 
-    // Use proper JSON response instead of streaming
-    res.status(200).json({ 
-      status: 'started', 
-      message: `Starting ${isAudio ? 'audio' : 'video'} download...`,
-      quality: quality
-    });
+    // Start download process immediately and return result
+    try {
+      const stream = ytdl(url, {
+        quality: formatOptions.quality,
+        filter: formatOptions.filter
+      });
 
-    // Download in background and create a simple status endpoint
-    setTimeout(async () => {
-      try {
-        const stream = ytdl(url, {
-          quality: formatOptions.quality,
-          filter: formatOptions.filter
-        });
+      const writeStream = fs.createWriteStream(filePath);
 
-        const writeStream = fs.createWriteStream(filePath);
+      await new Promise((resolve, reject) => {
+        stream.pipe(writeStream);
+        stream.on('end', resolve);
+        stream.on('error', reject);
+        writeStream.on('error', reject);
+      });
 
-        await new Promise((resolve, reject) => {
-          stream.pipe(writeStream);
-          stream.on('end', resolve);
-          stream.on('error', reject);
-          writeStream.on('error', reject);
-        });
-
-        console.log(`Download complete! Saved as ${fileName}`);
-      } catch (error) {
-        console.error('Background download error:', error);
-        // Clean up failed download
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
+      console.log(`Download complete! Saved as ${fileName}`);
+      
+      // Return success response
+      return res.status(200).json({
+        status: 'completed',
+        message: `${isAudio ? 'Audio' : 'Video'} download completed successfully!`,
+        filename: fileName,
+        downloadUrl: `/download-file/${fileName}`,
+        quality: quality
+      });
+      
+    } catch (downloadError) {
+      console.error('Download error:', downloadError);
+      
+      // Clean up failed download
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
       }
-    }, 100);
+      
+      let errorMessage = 'Failed to download video';
+      if (downloadError.message.includes('Video unavailable')) {
+        errorMessage = 'Video is unavailable or private';
+      } else if (downloadError.message.includes('This video is not available')) {
+        errorMessage = 'Video not available in this region';  
+      } else if (downloadError.message.includes('Sign in to confirm')) {
+        errorMessage = 'Age-restricted content cannot be downloaded';
+      }
+      
+      return res.status(500).json({
+        status: 'error',
+        message: errorMessage
+      });
+    }
 
   } catch (error) {
     console.error('Error downloading video:', error);
