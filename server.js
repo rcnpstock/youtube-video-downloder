@@ -1,15 +1,12 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const ytdl = require('@distube/ytdl-core');
+const youtubedl = require('youtube-dl-exec');
 const cors = require('cors');
 const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Disable ytdl update check to avoid 403 errors
-process.env.YTDL_NO_UPDATE = 'true';
 
 // Configure CORS for cross-origin requests from Netlify frontend
 app.use(cors({
@@ -55,25 +52,29 @@ function getNextVideoName(folder, prefix = 'video') {
 function getFormatOptions(quality) {
   switch (quality) {
     case 'best':
-      return { quality: 'highestvideo', filter: 'audioandvideo' };
+      return { format: 'best[ext=mp4]/best' };
     case 'worst':
-      return { quality: 'lowestvideo', filter: 'audioandvideo' };
+      return { format: 'worst[ext=mp4]/worst' };
     case 'audio':
-      return { quality: 'highestaudio', filter: 'audioonly' };
+      return { 
+        format: 'bestaudio[ext=mp3]/bestaudio/best[height<=?480]',
+        extractAudio: true,
+        audioFormat: 'mp3'
+      };
     case '2160':
-      return { quality: 'highestvideo', filter: format => format.height <= 2160 };
+      return { format: 'best[height<=2160][ext=mp4]/best[height<=2160]/best' };
     case '1440':
-      return { quality: 'highestvideo', filter: format => format.height <= 1440 };
+      return { format: 'best[height<=1440][ext=mp4]/best[height<=1440]/best' };
     case '1080':
-      return { quality: 'highestvideo', filter: format => format.height <= 1080 };
+      return { format: 'best[height<=1080][ext=mp4]/best[height<=1080]/best' };
     case '720':
-      return { quality: 'highestvideo', filter: format => format.height <= 720 };
+      return { format: 'best[height<=720][ext=mp4]/best[height<=720]/best' };
     case '480':
-      return { quality: 'highestvideo', filter: format => format.height <= 480 };
+      return { format: 'best[height<=480][ext=mp4]/best[height<=480]/best' };
     case '360':
-      return { quality: 'highestvideo', filter: format => format.height <= 360 };
+      return { format: 'best[height<=360][ext=mp4]/best[height<=360]/best' };
     default:
-      return { quality: 'highestvideo', filter: 'audioandvideo' };
+      return { format: 'best[ext=mp4]/best' };
   }
 }
 
@@ -95,6 +96,10 @@ app.post('/download', async (req, res) => {
     }
 
     const outputFolder = path.join(__dirname, 'downloads');
+    if (!fs.existsSync(outputFolder)) {
+      fs.mkdirSync(outputFolder, { recursive: true });
+    }
+
     const formatOptions = getFormatOptions(quality);
     const isAudio = quality === 'audio';
     const fileExtension = isAudio ? 'mp3' : 'mp4';
@@ -104,31 +109,19 @@ app.post('/download', async (req, res) => {
 
     console.log(`Starting download for ${url} with quality: ${quality}...`);
 
-    // Start download process immediately and return result
     try {
-      const stream = ytdl(url, {
-        quality: formatOptions.quality,
-        filter: formatOptions.filter,
-        requestOptions: {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Encoding': 'gzip, deflate'
-          }
-        }
-      });
-
-      const writeStream = fs.createWriteStream(filePath);
-
-      await new Promise((resolve, reject) => {
-        stream.pipe(writeStream);
-        stream.on('end', resolve);
-        stream.on('error', reject);
-        writeStream.on('error', reject);
+      // Download using youtube-dl-exec
+      await youtubedl(url, {
+        output: filePath,
+        ...formatOptions
       });
 
       console.log(`Download complete! Saved as ${fileName}`);
+      
+      // Check if file was actually created
+      if (!fs.existsSync(filePath)) {
+        throw new Error('Downloaded file not found');
+      }
       
       // Return success response
       return res.status(200).json({
@@ -154,10 +147,10 @@ app.post('/download', async (req, res) => {
         errorMessage = 'Video not available in this region';  
       } else if (downloadError.message.includes('Sign in to confirm')) {
         errorMessage = 'Age-restricted content cannot be downloaded';
-      } else if (downloadError.message.includes('parsing watch.html')) {
-        errorMessage = 'YouTube changed their format. Please try again later or use a different video.';
-      } else if (downloadError.message.includes('UnrecoverableError')) {
-        errorMessage = 'Video cannot be accessed. It may be private, deleted, or restricted.';
+      } else if (downloadError.message.includes('Private video')) {
+        errorMessage = 'This is a private video and cannot be downloaded';
+      } else if (downloadError.message.includes('blocked')) {
+        errorMessage = 'Video is blocked in this region';
       }
       
       return res.status(500).json({
@@ -197,41 +190,45 @@ app.post('/download-thumbnail', async (req, res) => {
       return res.status(400).json({ error: 'Please provide a valid YouTube URL' });
     }
 
-    // Get video info to extract thumbnail
-    const info = await ytdl.getInfo(url, {
-      requestOptions: {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Encoding': 'gzip, deflate'
-        }
-      }
-    });
-    const thumbnailUrl = info.videoDetails.thumbnails[info.videoDetails.thumbnails.length - 1].url;
-
     const outputFolder = path.join(__dirname, 'downloads');
+    if (!fs.existsSync(outputFolder)) {
+      fs.mkdirSync(outputFolder, { recursive: true });
+    }
+
     const nextBaseName = getNextVideoName(outputFolder, 'thumbnail');
     const fileName = `${nextBaseName}.jpg`;
     const filePath = path.join(outputFolder, fileName);
 
-    // Download thumbnail
-    const response = await fetch(thumbnailUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch thumbnail: ${response.status}`);
-    }
-    
-    const buffer = await response.arrayBuffer();
-    fs.writeFileSync(filePath, Buffer.from(buffer));
+    try {
+      // Use youtube-dl to get thumbnail
+      await youtubedl(url, {
+        writeThumbnail: true,
+        skipDownload: true,
+        output: filePath.replace('.jpg', '.%(ext)s')
+      });
 
-    console.log(`Thumbnail download complete! Saved as ${fileName}`);
-    
-    res.status(200).json({
-      status: 'completed',
-      message: 'Thumbnail download completed successfully!',
-      filename: fileName,
-      downloadUrl: `/download-file/${fileName}`
-    });
+      // Find the actual thumbnail file (youtube-dl might use different extension)
+      const files = fs.readdirSync(outputFolder);
+      const thumbnailFile = files.find(file => file.startsWith(nextBaseName) && file.includes('thumbnail'));
+      
+      if (thumbnailFile) {
+        const actualFilePath = path.join(outputFolder, thumbnailFile);
+        console.log(`Thumbnail download complete! Saved as ${thumbnailFile}`);
+        
+        res.status(200).json({
+          status: 'completed',
+          message: 'Thumbnail download completed successfully!',
+          filename: thumbnailFile,
+          downloadUrl: `/download-file/${thumbnailFile}`
+        });
+      } else {
+        throw new Error('Thumbnail file not found after download');
+      }
+
+    } catch (downloadError) {
+      console.error('Thumbnail download error:', downloadError);
+      throw downloadError;
+    }
 
   } catch (error) {
     console.error('Error downloading thumbnail:', error);
@@ -239,12 +236,10 @@ app.post('/download-thumbnail', async (req, res) => {
     let errorMessage = 'Failed to download thumbnail';
     if (error.message.includes('unavailable')) {
       errorMessage = 'Video is unavailable or private';
-    } else if (error.message.includes('fetch thumbnail')) {
-      errorMessage = 'Could not fetch thumbnail image';
-    } else if (error.message.includes('parsing watch.html')) {
-      errorMessage = 'YouTube changed their format. Please try again later or use a different video.';
-    } else if (error.message.includes('UnrecoverableError') || error.message.includes('Sign in to confirm')) {
-      errorMessage = 'Video cannot be accessed. It may be private, deleted, or age-restricted.';
+    } else if (error.message.includes('Private video')) {
+      errorMessage = 'This is a private video';
+    } else if (error.message.includes('blocked')) {
+      errorMessage = 'Video is blocked in this region';
     }
     
     res.status(500).json({
