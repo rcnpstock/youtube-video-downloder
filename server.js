@@ -1,15 +1,12 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const YTDlpWrap = require('yt-dlp-wrap').default;
+const youtubedl = require('node-youtube-dl');
 const cors = require('cors');
 const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Initialize yt-dlp
-const ytDlpWrap = new YTDlpWrap();
 
 // Configure CORS for cross-origin requests from Netlify frontend
 app.use(cors({
@@ -53,27 +50,29 @@ function getNextVideoName(folder, prefix = 'video') {
 }
 
 function getFormatOptions(quality) {
+  const baseOptions = ['--no-check-certificate', '--prefer-insecure'];
+  
   switch (quality) {
     case 'best':
-      return ['--format', 'best[ext=mp4]/best'];
+      return [...baseOptions, '--format', 'best[ext=mp4]/best'];
     case 'worst':
-      return ['--format', 'worst[ext=mp4]/worst'];
+      return [...baseOptions, '--format', 'worst[ext=mp4]/worst'];
     case 'audio':
-      return ['--format', 'bestaudio', '--extract-audio', '--audio-format', 'mp3'];
+      return [...baseOptions, '--format', 'bestaudio', '--extract-audio', '--audio-format', 'mp3'];
     case '2160':
-      return ['--format', 'best[height<=2160][ext=mp4]/best[height<=2160]/best'];
+      return [...baseOptions, '--format', 'best[height<=2160][ext=mp4]/best[height<=2160]/best'];
     case '1440':
-      return ['--format', 'best[height<=1440][ext=mp4]/best[height<=1440]/best'];
+      return [...baseOptions, '--format', 'best[height<=1440][ext=mp4]/best[height<=1440]/best'];
     case '1080':
-      return ['--format', 'best[height<=1080][ext=mp4]/best[height<=1080]/best'];
+      return [...baseOptions, '--format', 'best[height<=1080][ext=mp4]/best[height<=1080]/best'];
     case '720':
-      return ['--format', 'best[height<=720][ext=mp4]/best[height<=720]/best'];
+      return [...baseOptions, '--format', 'best[height<=720][ext=mp4]/best[height<=720]/best'];
     case '480':
-      return ['--format', 'best[height<=480][ext=mp4]/best[height<=480]/best'];
+      return [...baseOptions, '--format', 'best[height<=480][ext=mp4]/best[height<=480]/best'];
     case '360':
-      return ['--format', 'best[height<=360][ext=mp4]/best[height<=360]/best'];
+      return [...baseOptions, '--format', 'best[height<=360][ext=mp4]/best[height<=360]/best'];
     default:
-      return ['--format', 'best[ext=mp4]/best'];
+      return [...baseOptions, '--format', 'best[ext=mp4]/best'];
   }
 }
 
@@ -109,14 +108,35 @@ app.post('/download', async (req, res) => {
     console.log(`Starting download for ${url} with quality: ${quality}...`);
 
     try {
-      // Download using yt-dlp-wrap
+      // Download using node-youtube-dl
       const formatOptions = getFormatOptions(quality);
+      const outputPath = path.join(outputFolder, `${nextBaseName}.%(ext)s`);
       
-      await ytDlpWrap.execPromise([
-        url,
-        '--output', path.join(outputFolder, `${nextBaseName}.%(ext)s`),
-        ...formatOptions
-      ]);
+      console.log('Executing download with options:', formatOptions);
+      
+      await new Promise((resolve, reject) => {
+        const video = youtubedl(url, formatOptions, {
+          cwd: outputFolder
+        });
+        
+        video.on('info', (info) => {
+          console.log('Download started:', info.title);
+          console.log('Filename: ' + info._filename);
+          
+          const outputFile = path.join(outputFolder, `${nextBaseName}.${info.ext}`);
+          video.pipe(fs.createWriteStream(outputFile));
+        });
+        
+        video.on('complete', (info) => {
+          console.log('Download completed:', info.title);
+          resolve(info);
+        });
+        
+        video.on('error', (err) => {
+          console.error('Download error:', err);
+          reject(err);
+        });
+      });
 
       console.log(`Download complete! Checking for downloaded file...`);
       
@@ -221,13 +241,31 @@ app.post('/download-thumbnail', async (req, res) => {
     const filePath = path.join(outputFolder, fileName);
 
     try {
-      // Use yt-dlp to get thumbnail
-      await ytDlpWrap.execPromise([
-        url,
-        '--write-thumbnail',
-        '--skip-download',
-        '--output', path.join(outputFolder, `${nextBaseName}.%(ext)s`)
-      ]);
+      // Get video info first to extract thumbnail URL
+      await new Promise((resolve, reject) => {
+        youtubedl.getInfo(url, ['--no-check-certificate'], (err, info) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          
+          console.log('Got video info:', info.title);
+          
+          if (info.thumbnail) {
+            // Download thumbnail directly
+            fetch(info.thumbnail)
+              .then(response => response.arrayBuffer())
+              .then(buffer => {
+                const thumbnailPath = path.join(outputFolder, `${nextBaseName}.jpg`);
+                fs.writeFileSync(thumbnailPath, Buffer.from(buffer));
+                resolve(info);
+              })
+              .catch(reject);
+          } else {
+            reject(new Error('No thumbnail URL found'));
+          }
+        });
+      });
 
       // Find the actual thumbnail file
       const files = fs.readdirSync(outputFolder);
@@ -236,7 +274,7 @@ app.post('/download-thumbnail', async (req, res) => {
       const thumbnailFile = files.find(file => 
         file.startsWith(nextBaseName) && 
         (file.endsWith('.jpg') || file.endsWith('.jpeg') || file.endsWith('.png') || 
-         file.endsWith('.webp') || file.includes('thumbnail'))
+         file.endsWith('.webp'))
       );
       
       if (thumbnailFile) {
